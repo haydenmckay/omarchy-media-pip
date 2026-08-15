@@ -100,21 +100,44 @@ apply_geometry() {
   local mon mx my mw mh rl rt rr rb usable_x usable_y usable_w usable_h
   local prev_edge prev_width
   mon=$(monitor_json_for "$mon_id")
-  mx=$(jq -r '.x' <<<"$mon"); my=$(jq -r '.y' <<<"$mon")
-  mw=$(jq -r '.width' <<<"$mon"); mh=$(jq -r '.height' <<<"$mon")
+  # hyprctl reports monitor width/height in *physical* pixels while window
+  # geometry is in logical pixels, so both must be divided by scale --
+  # otherwise every size and position is wrong the moment the display is
+  # scaled (Omarchy binds a 1x/1.6x/2x/3x cycle to SUPER CTRL+BACKSPACE).
+  # Odd `transform` values mean the output is rotated 90/270, which swaps
+  # the logical axes. Same formula omarchy-capture-webcam-resize uses for
+  # its own overlay.
+  read -r mx my mw mh < <(jq -r '
+    . as $m
+    | ((($m.transform // 0) % 2) == 1) as $rot
+    | [ .x,
+        .y,
+        (((if $rot then .height else .width end) / .scale) | floor),
+        (((if $rot then .width else .height end) / .scale) | floor)
+      ] | @tsv' <<<"$mon")
   rl=$(jq -r '.reserved[0]' <<<"$mon"); rt=$(jq -r '.reserved[1]' <<<"$mon")
   rr=$(jq -r '.reserved[2]' <<<"$mon"); rb=$(jq -r '.reserved[3]' <<<"$mon")
 
   # The QML spacer's own exclusive zone (from the *previous* call) is part
   # of hyprctl's reported reserved area, so subtracting it here as if it
   # were someone else's space would shrink the usable area a little more
-  # on every single resize/reposition. Add our own last contribution back
-  # so "usable" always means "the monitor minus bar-type reservations that
-  # aren't ours", not a shrinking feedback loop.
-  prev_edge=$(state_get '.reservation.edge' "")
-  prev_width=$(state_get '.reservation.widthPx' 0)
-  [[ "$prev_edge" != "left" ]] || rl=$((rl - prev_width))
-  [[ "$prev_edge" != "right" ]] || rr=$((rr - prev_width))
+  # on every resize/reposition. Add our own last contribution back so
+  # "usable" means "the monitor minus reservations that aren't ours".
+  #
+  # Only when the spacer is genuinely up, though: state still carries the
+  # last computed width after PiP is switched off, and reservation is
+  # opt-in, so adding it back unconditionally inflates the usable area by a
+  # strip that was never reserved -- which sized the window off-screen.
+  # The spacer's own condition is pipActive && reservationEnabled (plus a
+  # liveness check on the QML side), so mirror that here, reading state as
+  # it stands before this call updates it.
+  if [[ "$(state_get '.pipActive' false)" == "true" \
+     && "$(state_get '.reservationEnabled' false)" == "true" ]]; then
+    prev_edge=$(state_get '.reservation.edge' "")
+    prev_width=$(state_get '.reservation.widthPx' 0)
+    [[ "$prev_edge" != "left" ]] || rl=$((rl - prev_width))
+    [[ "$prev_edge" != "right" ]] || rr=$((rr - prev_width))
+  fi
 
   usable_x=$((mx + rl)); usable_y=$((my + rt))
   usable_w=$((mw - rl - rr)); usable_h=$((mh - rt - rb))
