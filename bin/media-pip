@@ -1,0 +1,369 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+SOURCES_FILE="$SCRIPT_DIR/../plugin/sources.json"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/media-pip"
+STATE_FILE="$STATE_DIR/state.json"
+mkdir -p "$STATE_DIR"
+
+MARGIN="${MEDIA_PIP_MARGIN:-16}"
+ASPECT_W="${MEDIA_PIP_ASPECT_W:-16}"
+ASPECT_H="${MEDIA_PIP_ASPECT_H:-9}"
+
+SIZE_FRACTIONS=(0.25 0.38 0.55)
+SIZE_NAMES=(small medium large)
+CORNER_NAMES=(bottom-right bottom-left top-left top-right)
+
+# reservationEnabled defaults off: reserving space claims a coarse full-edge
+# strip (a wlr-layer-shell constraint, see plugin/SpacerWindow.qml), which is
+# a big enough side effect on the rest of the desktop to be opt-in.
+DEFAULT_STATE='{"activeSourceId":null,"pipActive":false,"reservationEnabled":false,"sizeIdx":0,"cornerIdx":0,"reservation":{"edge":"right","widthPx":0}}'
+
+[[ -f "$STATE_FILE" ]] || echo "$DEFAULT_STATE" >"$STATE_FILE"
+
+usage() {
+  cat <<EOF
+Usage: media-pip <command>
+
+Commands:
+  toggle              Show/hide PiP for the active source (float+pin+snap, or restore to tiled)
+  size                Cycle size preset: ${SIZE_NAMES[*]}. Enables PiP first if needed.
+  corner              Cycle corner: ${CORNER_NAMES[*]}. Enables PiP first if needed.
+  source              Cycle to the next configured source, switching PiP to it live if active.
+  reservation <on|off|toggle>  Toggle whether tiled windows reserve space around the PiP.
+  reconcile            Self-heal: turn off stale pipActive state if the tracked window
+                       is gone or no longer actually floating+pinned. Never launches
+                       anything. Called by the Quickshell service on every shell start.
+  status               Print current state.
+EOF
+  exit "${1:-0}"
+}
+
+osd() { omarchy osd -m "$1" >/dev/null 2>&1 || true; }
+
+# Hyprland 0.56.2's Lua config dropped the classic `dispatch <name> <args>`
+# CLI syntax entirely (confirmed: github.com/hyprwm/Hyprland/discussions/14255).
+# Dispatchers are now called as `hl.dsp.*` Lua expressions; window selectors
+# are passed as the `window` field's value using the same selector strings
+# as before (e.g. "address:0x...").
+hdsp() { hyprctl dispatch "$1" >/dev/null; }
+
+# ---------------------------------------------------------------- state I/O
+
+state_raw() { cat "$STATE_FILE"; }
+
+state_get() {
+  local filter="$1" default="$2" v
+  v=$(jq -r "$filter // empty" "$STATE_FILE" 2>/dev/null)
+  echo "${v:-$default}"
+}
+
+state_merge() {
+  local patch_json="$1" tmp
+  tmp=$(mktemp "$STATE_DIR/.state.XXXXXX")
+  jq --argjson patch "$patch_json" '. * $patch' "$STATE_FILE" >"$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+# ------------------------------------------------------------- source list
+
+sources_json() { cat "$SOURCES_FILE"; }
+
+source_by_id() { jq -c --arg id "$1" '.[] | select(.id == $id)' "$SOURCES_FILE"; }
+
+first_source_id() { jq -r '.[0].id' "$SOURCES_FILE"; }
+
+next_source_id() {
+  local current="$1"
+  jq -r --arg cur "$current" '
+    (map(.id) | index($cur)) as $i
+    | if $i == null then .[0].id
+      else .[($i + 1) % length].id
+      end' "$SOURCES_FILE"
+}
+
+active_source_id() {
+  local id
+  id=$(state_get '.activeSourceId' "")
+  if [[ -z "$id" || "$id" == "null" ]]; then id=$(first_source_id); fi
+  echo "$id"
+}
+
+# --------------------------------------------------------------- geometry
+
+monitor_json_for() { hyprctl monitors -j | jq -c ".[] | select(.id == $1)"; }
+
+apply_geometry() {
+  local addr="$1" mon_id="$2" size_idx="$3" corner_idx="$4"
+  local mon mx my mw mh rl rt rr rb usable_x usable_y usable_w usable_h
+  local prev_edge prev_width
+  mon=$(monitor_json_for "$mon_id")
+  mx=$(jq -r '.x' <<<"$mon"); my=$(jq -r '.y' <<<"$mon")
+  mw=$(jq -r '.width' <<<"$mon"); mh=$(jq -r '.height' <<<"$mon")
+  rl=$(jq -r '.reserved[0]' <<<"$mon"); rt=$(jq -r '.reserved[1]' <<<"$mon")
+  rr=$(jq -r '.reserved[2]' <<<"$mon"); rb=$(jq -r '.reserved[3]' <<<"$mon")
+
+  # The QML spacer's own exclusive zone (from the *previous* call) is part
+  # of hyprctl's reported reserved area, so subtracting it here as if it
+  # were someone else's space would shrink the usable area a little more
+  # on every single resize/reposition. Add our own last contribution back
+  # so "usable" always means "the monitor minus bar-type reservations that
+  # aren't ours", not a shrinking feedback loop.
+  prev_edge=$(state_get '.reservation.edge' "")
+  prev_width=$(state_get '.reservation.widthPx' 0)
+  [[ "$prev_edge" != "left" ]] || rl=$((rl - prev_width))
+  [[ "$prev_edge" != "right" ]] || rr=$((rr - prev_width))
+
+  usable_x=$((mx + rl)); usable_y=$((my + rt))
+  usable_w=$((mw - rl - rr)); usable_h=$((mh - rt - rb))
+
+  local frac="${SIZE_FRACTIONS[$size_idx]}" w h
+  w=$(awk -v uw="$usable_w" -v f="$frac" 'BEGIN{printf "%d", uw*f}')
+  h=$(awk -v w="$w" -v aw="$ASPECT_W" -v ah="$ASPECT_H" 'BEGIN{printf "%d", w*ah/aw}')
+
+  local x y edge
+  case "${CORNER_NAMES[$corner_idx]}" in
+    bottom-right) x=$((usable_x + usable_w - w - MARGIN)); y=$((usable_y + usable_h - h - MARGIN)); edge="right" ;;
+    bottom-left)  x=$((usable_x + MARGIN));                y=$((usable_y + usable_h - h - MARGIN)); edge="left" ;;
+    top-left)     x=$((usable_x + MARGIN));                y=$((usable_y + MARGIN));                edge="left" ;;
+    top-right)    x=$((usable_x + usable_w - w - MARGIN)); y=$((usable_y + MARGIN));                edge="right" ;;
+  esac
+
+  hdsp "hl.dsp.window.resize({x=$w, y=$h, relative=false, window='address:$addr'})"
+  hdsp "hl.dsp.window.move({x=$x, y=$y, relative=false, window='address:$addr'})"
+
+  state_merge "$(jq -nc --arg edge "$edge" --argjson w "$w" '{reservation:{edge:$edge,widthPx:$w}}')"
+}
+
+# ------------------------------------------------------------- window mgmt
+
+source_host() {
+  # Strip scheme, then stop at the first ':' or '/' -- a port survives
+  # in the URL but never appears in Chromium's derived WM class, so
+  # leaving it in here breaks the class-contains-host match entirely.
+  jq -r '.url' <<<"$(source_by_id "$1")" | sed -E 's#^[a-z]+://##; s#[:/].*##'
+}
+
+# Chromium derives WM class from the app URL's host and ignores --class
+# under Wayland/Ozone (verified empirically: reserved area never changed
+# when passed), so a substring match on the host is the only reliable way
+# to find "this source's" window, whether we opened it or the user did
+# (e.g. via the plain SUPER+SHIFT+L Plex launcher).
+window_address_for() {
+  local source_id="$1" host addr
+  host=$(source_host "$source_id")
+  addr=$(hyprctl clients -j | jq -r --arg host "$host" '[.[] | select(.class | contains($host))][0].address // empty')
+  [[ -n "$addr" ]] || return 1
+  echo "$addr"
+}
+
+# omarchy-launch-webapp routes through uwsm-app (systemd scope activation),
+# which measured anywhere from ~1s to 15s+ of added, highly variable launch
+# latency in testing -- enough to make a fixed timeout unreliable. This
+# replicates its own browser-resolution logic but execs the resolved binary
+# directly, matching the ~1s launch time measured when bypassing uwsm-app.
+resolve_browser_exec() {
+  local browser
+  browser=$(xdg-settings get default-web-browser)
+  case "$browser" in
+    google-chrome* | brave* | microsoft-edge* | opera* | vivaldi* | helium*) ;;
+    *) browser="chromium.desktop" ;;
+  esac
+  sed -n 's/^Exec=\([^ ]*\).*/\1/p' {"$HOME"/.local,"$HOME"/.nix-profile,/usr}/share/applications/"$browser" 2>/dev/null | head -1
+}
+
+launch_source_window() {
+  local source_id="$1" url name host before candidate waited browser_exec
+
+  url=$(jq -r '.url' <<<"$(source_by_id "$source_id")")
+  name=$(jq -r '.name' <<<"$(source_by_id "$source_id")")
+  [[ -n "$url" && "$url" != "null" ]] || { echo "Unknown source: $source_id" >&2; exit 1; }
+  host=$(source_host "$source_id")
+
+  browser_exec=$(resolve_browser_exec)
+  [[ -n "$browser_exec" ]] || { echo "Could not resolve default browser" >&2; exit 1; }
+
+  before=$(hyprctl clients -j | jq -r '.[].address')
+  # Routed through a transient systemd --user scope so it's fully detached
+  # from this script's own process tree.
+  systemd-run --user --scope --collect -q -- "$browser_exec" --app="$url" >/dev/null 2>&1 &
+
+  # Opening a window against an *already-running* Brave instance goes
+  # through Chromium's single-instance IPC to hand off the request, which
+  # measured highly variable latency in testing (under 1s up to 12s+).
+  # Budget generously; this is a one-time cost per source per session.
+  waited=0
+  candidate=""
+  while (( waited < 200 )); do
+    sleep 0.2
+    candidate=$(hyprctl clients -j | jq -r --arg host "$host" '
+      [.[] | select(.class | contains($host))][0].address // empty')
+    [[ -z "$candidate" ]] || break
+    waited=$((waited + 1))
+  done
+
+  [[ -n "$candidate" ]] || { echo "Timed out waiting for $name window to open" >&2; exit 1; }
+  echo "$candidate"
+}
+
+# Opening a source's window is slow enough (see launch_source_window) that
+# two invocations issued close together (e.g. a doubled keypress, or a
+# hotkey fired while an earlier toggle is still opening the window) can
+# both fail to find it yet and each launch their own -- flock serializes
+# the check-then-launch per source so the second caller waits and then
+# finds what the first one opened, instead of racing a duplicate.
+ensure_window() {
+  local source_id="$1" lock_fd
+  exec {lock_fd}>"$STATE_DIR/.lock.$source_id"
+  flock "$lock_fd"
+  window_address_for "$source_id" || launch_source_window "$source_id"
+}
+
+# -------------------------------------------------------------------- pip
+
+enable_pip() {
+  local source_id="$1" addr mon_id win size_idx corner_idx name
+  # A plain `x=$(cmd)` assignment does not reliably trip `set -e` when cmd
+  # fails, so ensure_window's failure must be checked explicitly here --
+  # otherwise this proceeds to dispatch Hyprland calls against an empty
+  # window selector.
+  addr=$(ensure_window "$source_id") || exit 1
+  [[ -n "$addr" ]] || exit 1
+  win=$(hyprctl clients -j | jq -c --arg a "$addr" '.[] | select(.address == $a)')
+  mon_id=$(jq -r '.monitor' <<<"$win")
+
+  hdsp "hl.dsp.window.float({action='enable', window='address:$addr'})"
+  hdsp "hl.dsp.window.pin({action='enable', window='address:$addr'})"
+
+  size_idx=$(state_get '.sizeIdx' 0)
+  corner_idx=$(state_get '.cornerIdx' 0)
+  apply_geometry "$addr" "$mon_id" "$size_idx" "$corner_idx"
+
+  name=$(jq -r '.name' <<<"$(source_by_id "$source_id")")
+  state_merge "$(jq -nc --arg id "$source_id" '{activeSourceId:$id,pipActive:true}')"
+  osd "PiP: $name — ${CORNER_NAMES[$corner_idx]} — ${SIZE_NAMES[$size_idx]}"
+}
+
+disable_pip() {
+  local source_id addr
+  source_id=$(active_source_id)
+  addr=$(window_address_for "$source_id") || { state_merge '{"pipActive":false}'; return; }
+
+  hdsp "hl.dsp.window.pin({action='disable', window='address:$addr'})"
+  hdsp "hl.dsp.window.float({action='disable', window='address:$addr'})"
+  state_merge '{"pipActive":false}'
+  osd "PiP: off"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_toggle() {
+  local active; active=$(state_get '.pipActive' false)
+  if [[ "$active" == "true" ]]; then disable_pip; else enable_pip "$(active_source_id)"; fi
+}
+
+cmd_size() {
+  local active; active=$(state_get '.pipActive' false)
+  if [[ "$active" != "true" ]]; then enable_pip "$(active_source_id)"; return; fi
+  local source_id addr mon_id cur next
+  source_id=$(active_source_id)
+  addr=$(window_address_for "$source_id") || { enable_pip "$source_id"; return; }
+  mon_id=$(jq -r '.monitor' <<<"$(hyprctl clients -j | jq -c --arg a "$addr" '.[] | select(.address == $a)')")
+  cur=$(state_get '.sizeIdx' 0)
+  next=$(((cur + 1) % ${#SIZE_NAMES[@]}))
+  state_merge "$(jq -nc --argjson v "$next" '{sizeIdx:$v}')"
+  apply_geometry "$addr" "$mon_id" "$next" "$(state_get '.cornerIdx' 0)"
+  osd "PiP size: ${SIZE_NAMES[$next]}"
+}
+
+cmd_corner() {
+  local active; active=$(state_get '.pipActive' false)
+  if [[ "$active" != "true" ]]; then enable_pip "$(active_source_id)"; return; fi
+  local source_id addr mon_id cur next
+  source_id=$(active_source_id)
+  addr=$(window_address_for "$source_id") || { enable_pip "$source_id"; return; }
+  mon_id=$(jq -r '.monitor' <<<"$(hyprctl clients -j | jq -c --arg a "$addr" '.[] | select(.address == $a)')")
+  cur=$(state_get '.cornerIdx' 0)
+  next=$(((cur + 1) % ${#CORNER_NAMES[@]}))
+  state_merge "$(jq -nc --argjson v "$next" '{cornerIdx:$v}')"
+  apply_geometry "$addr" "$mon_id" "$(state_get '.sizeIdx' 0)" "$next"
+  osd "PiP corner: ${CORNER_NAMES[$next]}"
+}
+
+cmd_source() {
+  local current next active
+  current=$(active_source_id)
+  next=$(next_source_id "$current")
+  active=$(state_get '.pipActive' false)
+  if [[ "$active" == "true" ]]; then
+    disable_pip
+    enable_pip "$next"
+  else
+    state_merge "$(jq -nc --arg id "$next" '{activeSourceId:$id}')"
+    osd "PiP source: $(jq -r '.name' <<<"$(source_by_id "$next")")"
+  fi
+}
+
+cmd_reservation() {
+  local mode="${1:-toggle}" cur next
+  cur=$(state_get '.reservationEnabled' false)
+  case "$mode" in
+    on) next=true ;;
+    off) next=false ;;
+    toggle) [[ "$cur" == "true" ]] && next=false || next=true ;;
+    *) echo "Usage: media-pip reservation <on|off|toggle>" >&2; exit 1 ;;
+  esac
+  state_merge "$(jq -nc --argjson v "$next" '{reservationEnabled:$v}')"
+  osd "PiP reservation: $([[ $next == true ]] && echo on || echo off)"
+}
+
+# Quickshell reloads Service.qml on every shell restart (login, crash
+# recovery, `omarchy restart shell`) and it just mirrors state.json as-is,
+# including reservation. Persisted `pipActive:true` from a source that was
+# genuinely left in PiP mode is worth restoring, but stale `pipActive:true`
+# left over from a source that's since been closed (or a laptop reboot
+# that dropped Hyprland's floating/pinned state entirely) would otherwise
+# make the reservation spacer silently claim real screen space -- with no
+# window actually floating there -- the instant the shell loads, with no
+# user action at all. This is called from Service.qml on startup specifically
+# to make that opt-in: never launches anything, only ever turns a stale
+# "on" into an honest "off" by checking the tracked window still exists
+# and is actually floating+pinned right now.
+cmd_reconcile() {
+  local active source_id addr win floating pinned
+  active=$(state_get '.pipActive' false)
+  [[ "$active" == "true" ]] || return 0
+
+  source_id=$(active_source_id)
+  addr=$(window_address_for "$source_id") || { state_merge '{"pipActive":false,"reservation":{"edge":"right","widthPx":0}}'; return 0; }
+
+  win=$(hyprctl clients -j | jq -c --arg a "$addr" '.[] | select(.address == $a)')
+  floating=$(jq -r '.floating' <<<"$win")
+  pinned=$(jq -r '.pinned' <<<"$win")
+  if [[ "$floating" != "true" || "$pinned" != "true" ]]; then
+    state_merge '{"pipActive":false,"reservation":{"edge":"right","widthPx":0}}'
+  fi
+}
+
+cmd_status() { state_raw; }
+
+main() {
+  case "${1:-}" in
+    toggle) cmd_toggle ;;
+    size) cmd_size ;;
+    corner) cmd_corner ;;
+    source) cmd_source ;;
+    reservation) cmd_reservation "${2:-toggle}" ;;
+    reconcile) cmd_reconcile ;;
+    status) cmd_status ;;
+    -h | --help | "") usage 0 ;;
+    *)
+      echo "Unknown command: $1" >&2
+      usage 1
+      ;;
+  esac
+}
+
+main "$@"

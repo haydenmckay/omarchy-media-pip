@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "trigz.media-pip",
+  "name": "Media PiP",
+  "version": "1.0.0",
+  "author": "trigz",
+  "description": "Floating, pinned, corner-snapped picture-in-picture mode for Plex/YouTube/etc, with toggleable screen-space reservation",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Media PiP",
+    "description": "Toggle picture-in-picture mode for Plex/YouTube",
+    "category": "Media",
+    "allowMultiple": false
+  }
+}

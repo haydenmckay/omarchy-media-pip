@@ -1,0 +1,4 @@
+[
+  { "id": "plex", "name": "Plex", "url": "http://localhost:32400/web/index.html" },
+  { "id": "youtube", "name": "YouTube", "url": "https://youtube.com/" }
+]
