@@ -301,12 +301,19 @@ Item {
     }
   }
 
+  // Which source (if any) installWebapp() is currently mid-flight for --
+  // the popup row uses this to show "Installing…" instead of sitting
+  // there looking unresponsive for the several seconds a favicon fetch
+  // can take. Empty string means none in flight.
+  property string installingSourceId: ""
+
   // Favicon fetch inside `omarchy-webapp-install` can take a few seconds
   // over the network, so this runs in the background rather than blocking
   // the popup -- refreshes sourcesStatus once it's actually done rather
   // than optimistically flipping the row to installed immediately.
   function installWebapp(sourceId) {
     if (installProcess.running) return
+    installingSourceId = sourceId
     installProcess.command = [root.cliPath, "webapp-install", sourceId]
     installProcess.running = true
   }
@@ -314,7 +321,10 @@ Item {
   Process {
     id: installProcess
     environment: ({ "MEDIA_PIP_SOURCES_DIR": root.sourceDir })
-    onExited: root.refreshSourcesStatus()
+    onExited: {
+      root.installingSourceId = ""
+      root.refreshSourcesStatus()
+    }
   }
 
   SpacerWindow {

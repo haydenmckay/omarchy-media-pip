@@ -159,13 +159,26 @@ cmd_sources_status() {
 # auto-fetch) can take a few seconds over the network; runs synchronously
 # since this is a deliberate, single user-initiated action from the
 # "Manage sources" popup, not something on any hot path.
+#
+# The auto-fetch tries the source's *own* URL first (nicer, matches what
+# the interactive `omarchy webapp install` flow does), which hard-fails
+# the entire install if that URL isn't actually reachable from here --
+# exactly the case for a self-hosted source's placeholder/localhost URL
+# with nothing running there yet (confirmed empirically: Plex's shipped
+# `localhost:32400` default failed installation outright on a machine
+# where Plex isn't running locally). Falling back to a generic icon name
+# (no network fetch at all, per omarchy-webapp-install's own bundled-icon
+# branch) means the web app still gets created either way -- a plain icon
+# beats no web app at all. A final failure still reaches the caller (QML
+# surfaces it), it's just no longer *this* failure mode.
 cmd_webapp_install() {
   local source_id="$1" src name url
   src=$(source_by_id "$source_id")
   [[ -n "$src" ]] || { echo "Unknown source: $source_id" >&2; exit 1; }
   name=$(jq -r '.name' <<<"$src")
   url=$(jq -r '.url' <<<"$src")
-  omarchy-webapp-install "$name" "$url" ""
+  omarchy-webapp-install "$name" "$url" "" \
+    || omarchy-webapp-install "$name" "$url" "video-x-generic"
 }
 
 next_source_id() {

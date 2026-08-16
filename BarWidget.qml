@@ -219,6 +219,7 @@ BarWidget {
         Rectangle {
           id: manageSourceRow
           required property var modelData
+          readonly property bool isInstalling: root.svc && root.svc.installingSourceId === modelData.id
 
           width: manageList.width
           height: Math.max(sourceLabel.implicitHeight, statusLabel.implicitHeight) + Style.space(10)
@@ -236,18 +237,23 @@ BarWidget {
             font.pixelSize: Style.font.body
           }
 
-          // Installed: a plain status glyph, nothing to click. Not
-          // installed: the same slot doubles as an "Install" action --
-          // installWebapp() is idempotent-ish (it just (re)writes the
-          // .desktop file) so there's no harm if this is clicked more than
-          // once before the status refresh lands.
+          // Installed: a plain status glyph, nothing to click. Installing:
+          // a third, non-interactive state so the several seconds a
+          // favicon fetch can take doesn't just look unresponsive. Neither:
+          // the slot doubles as an "Install" action -- installWebapp() is
+          // idempotent-ish (it just (re)writes the .desktop file) so
+          // there's no harm if this is clicked more than once before the
+          // status refresh lands, though installingSourceId already
+          // prevents that in practice (see disabled below).
           Text {
             id: statusLabel
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             anchors.rightMargin: Style.space(8)
-            text: manageSourceRow.modelData.installed ? "✓ Installed" : "Install"
-            color: manageSourceRow.modelData.installed
+            text: manageSourceRow.isInstalling
+              ? "Installing…"
+              : (manageSourceRow.modelData.installed ? "✓ Installed" : "Install")
+            color: (manageSourceRow.modelData.installed || manageSourceRow.isInstalling)
               ? Qt.darker(root.bar.foreground, 1.5)
               : (installHover.hovered ? root.bar.foreground : Color.accent)
             font.family: root.bar.fontFamily
@@ -258,7 +264,7 @@ BarWidget {
             id: installHover
             anchors.fill: parent
             hoverEnabled: true
-            enabled: !manageSourceRow.modelData.installed
+            enabled: !manageSourceRow.modelData.installed && !manageSourceRow.isInstalling
             cursorShape: Qt.PointingHandCursor
             onClicked: root.svc.installWebapp(manageSourceRow.modelData.id)
           }
