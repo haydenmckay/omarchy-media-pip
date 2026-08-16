@@ -154,8 +154,13 @@ direct edit either risks getting committed and pushed (leaking a home
 server's LAN address publicly) or getting silently reset on the next
 `omarchy plugin update`.
 
-Instead, create `~/.local/state/media-pip/sources.local.json` with just
-the sources you want to override:
+Easiest: right-click the bar icon → "Manage sources…" — Plex and Jellyfin
+each show a small settings cog (self-hosted sources only; there's nothing
+to point elsewhere for a fixed public service like Netflix). Click it, type
+the real address, hit Enter.
+
+That writes to `~/.local/state/media-pip/sources.local.json`, which you
+can also edit directly if you'd rather:
 
 ```json
 [
@@ -163,8 +168,10 @@ the sources you want to override:
 ]
 ```
 
-Entries match by `id` — a local entry replaces the shipped source with
-the same id, or adds an entirely new one if the id doesn't exist upstream.
+Entries match by `id` and merge field-by-field with the shipped entry —
+overriding just the URL doesn't lose that source's other fields (e.g.
+`selfHosted` itself, which is what makes the cog show up in the first
+place) — or add an entirely new source if the id doesn't exist upstream.
 This file lives outside the plugin's install directory entirely, so it
 survives updates and reinstalls, and it's `.gitignore`d as a backstop even
 if created inside a checkout by mistake.

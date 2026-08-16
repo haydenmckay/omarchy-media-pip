@@ -25,6 +25,10 @@ Item {
   // a ~/Work path left the source list empty for anyone else installing this.
   readonly property string sourceDir: manifest && manifest.__sourceDir ? manifest.__sourceDir : ""
   readonly property string sourcesPath: sourceDir + "/sources.json"
+  // Personal overrides (self-hosted URLs) -- see bin/media-pip's own
+  // LOCAL_SOURCES_FILE comment for why this lives in stateDir rather than
+  // sourceDir or anywhere git-tracked.
+  readonly property string localSourcesPath: stateDir + "/sources.local.json"
 
   // `omarchy plugin add` clones this repo straight into the live plugins
   // directory and never runs install.sh (there's no post-install hook in
@@ -54,7 +58,41 @@ Item {
   readonly property string cliPath: stateDir + "/media-pip"
 
   property var pipState: ({})
-  property var sources: []
+  // Raw contents of sources.json and (if present) the personal-override
+  // file -- never read directly outside this file; `sources` below is the
+  // field-merged result everything else should use.
+  property var baseSources: []
+  property var localSources: []
+  // Field-level merge, mirroring bin/media-pip's own jq merge exactly (see
+  // its comment for why field-level, not full-replace): a local entry
+  // overrides individual fields of the base entry with the same id --
+  // `selfHosted`/`onEnableKey`/etc from the base survive a URL-only
+  // override -- or is appended whole if its id doesn't exist upstream.
+  // This has to be correct here, not just in the CLI, because openSources/
+  // activeSourceHost/pipWindowLive below all key off it for window
+  // matching -- reading the unmerged sources.json here would still match
+  // windows against a stale/placeholder URL after a local override, even
+  // though the CLI side already had the right one.
+  readonly property var sources: {
+    var byId = {}
+    var order = []
+    for (var i = 0; i < baseSources.length; i++) {
+      var b = baseSources[i]
+      byId[b.id] = b
+      order.push(b.id)
+    }
+    for (var j = 0; j < localSources.length; j++) {
+      var l = localSources[j]
+      if (byId[l.id]) {
+        var merged = Object.assign({}, byId[l.id], l)
+        byId[l.id] = merged
+      } else {
+        byId[l.id] = l
+        order.push(l.id)
+      }
+    }
+    return order.map(function(id) { return byId[id] })
+  }
 
   readonly property bool pipActive: pipState.pipActive === true
   // Opt-in: reservation claims a coarse full-edge strip (a wlr-layer-shell
@@ -164,8 +202,19 @@ Item {
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
-    onLoaded: root.sources = root.parseArray(text())
-    onLoadFailed: root.sources = []
+    onLoaded: root.baseSources = root.parseArray(text())
+    onLoadFailed: root.baseSources = []
+  }
+
+  // Most users never create this file -- onLoadFailed (not present yet)
+  // is the expected, silent, common case, not an error.
+  FileView {
+    path: root.localSourcesPath
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.localSources = root.parseArray(text())
+    onLoadFailed: root.localSources = []
   }
 
   function parseObject(content) {
@@ -325,6 +374,27 @@ Item {
       root.installingSourceId = ""
       root.refreshSourcesStatus()
     }
+  }
+
+  // Backs the settings-cog edit box for self-hosted sources (Plex,
+  // Jellyfin) -- writes to sources.local.json via the CLI rather than
+  // this file touching it directly, so there's exactly one writer/format
+  // owner for that file regardless of whether it's edited by hand, via
+  // this UI, or ever gains another caller. `localSources` (and so
+  // `sources`) picks up the change on its own via FileView's
+  // watchChanges -- no manual refresh needed for the window-matching
+  // side; sourcesStatus still needs one, since its `installed` flags come
+  // from an explicit CLI call, not a watched file.
+  function setSourceUrl(sourceId, url) {
+    if (setUrlProcess.running) return
+    setUrlProcess.command = [root.cliPath, "set-source-url", sourceId, url]
+    setUrlProcess.running = true
+  }
+
+  Process {
+    id: setUrlProcess
+    environment: ({ "MEDIA_PIP_SOURCES_DIR": root.sourceDir })
+    onExited: root.refreshSourcesStatus()
   }
 
   SpacerWindow {

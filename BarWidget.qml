@@ -220,14 +220,32 @@ BarWidget {
           id: manageSourceRow
           required property var modelData
           readonly property bool isInstalling: root.svc && root.svc.installingSourceId === modelData.id
+          // Only self-hosted sources (Plex, Jellyfin) get a settings cog --
+          // nothing to point at a different address for a fixed public
+          // service like Netflix. Reset whenever the popup's underlying
+          // model data changes id (Repeater reusing a delegate for a
+          // different row) so a stale open editor can't follow it.
+          property bool editingUrl: false
+          onModelDataChanged: editingUrl = false
 
+          // Deliberately NOT conditioned on editingUrl: a height that changes
+          // when the editor opens resizes this row, which resizes manageList,
+          // which resizes the popup itself (contentHeight is bound to
+          // manageList.implicitHeight below) -- and that popup resize was
+          // racing the forceActiveFocus() call below, leaving the field
+          // effectively unfocused (hard to type into, Enter not submitting)
+          // until a manual click settled things. Sizing for all three
+          // possible row contents up front keeps the row's height constant
+          // across the edit-mode switch, so opening the editor never
+          // triggers a popup resize at all.
           width: manageList.width
-          height: Math.max(sourceLabel.implicitHeight, statusLabel.implicitHeight) + Style.space(10)
+          height: Math.max(sourceLabel.implicitHeight, statusLabel.implicitHeight, urlField.implicitHeight) + Style.space(10)
           radius: Style.spacing.labelGap
           color: "transparent"
 
           Text {
             id: sourceLabel
+            visible: !manageSourceRow.editingUrl
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             anchors.leftMargin: Style.space(8)
@@ -247,6 +265,7 @@ BarWidget {
           // prevents that in practice (see disabled below).
           Text {
             id: statusLabel
+            visible: !manageSourceRow.editingUrl
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             anchors.rightMargin: Style.space(8)
@@ -262,11 +281,59 @@ BarWidget {
 
           MouseArea {
             id: installHover
-            anchors.fill: parent
+            anchors.left: sourceLabel.right
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            visible: !manageSourceRow.editingUrl
             hoverEnabled: true
             enabled: !manageSourceRow.modelData.installed && !manageSourceRow.isInstalling
             cursorShape: Qt.PointingHandCursor
             onClicked: root.svc.installWebapp(manageSourceRow.modelData.id)
+          }
+
+          // Gear glyph, only for selfHosted sources -- opens the inline
+          // URL editor in place of the name/status row. Sits just left of
+          // statusLabel so it never overlaps the install click target.
+          Text {
+            id: cogIcon
+            visible: !manageSourceRow.editingUrl && manageSourceRow.modelData.selfHosted === true
+            anchors.right: statusLabel.left
+            anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter
+            text: "󰒓"
+            color: cogHover.hovered ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+
+            MouseArea {
+              id: cogHover
+              anchors.fill: parent
+              anchors.margins: -Style.space(4)
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: manageSourceRow.editingUrl = true
+            }
+          }
+
+          TextField {
+            id: urlField
+            visible: manageSourceRow.editingUrl
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.margins: Style.space(4)
+            verticalPadding: Style.space(2)
+            placeholderText: "http://192.168.1.50:32400/web/index.html"
+            foreground: root.bar.foreground
+            text: manageSourceRow.editingUrl ? manageSourceRow.modelData.url : ""
+
+            onVisibleChanged: if (visible) Qt.callLater(forceActiveFocus)
+            onAccepted: {
+              if (text.trim() !== "") root.svc.setSourceUrl(manageSourceRow.modelData.id, text.trim())
+              manageSourceRow.editingUrl = false
+            }
+            Keys.onEscapePressed: manageSourceRow.editingUrl = false
           }
         }
       }

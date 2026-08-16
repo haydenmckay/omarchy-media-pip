@@ -20,16 +20,22 @@ mkdir -p "$STATE_DIR"
 # file ships in a public git checkout. Lives in the state dir specifically
 # so it survives `omarchy plugin update`/reinstall, unlike anything placed
 # inside the plugin's own (git-managed) install directory. Entries match
-# by id: a local entry overrides the shipped one with the same id, or
-# adds an entirely new source if the id doesn't exist upstream. Every
-# other function in this file keeps reading $SOURCES_FILE unchanged --
-# this just repoints it once, up front, to the merged result.
+# by id: a local entry overrides *fields* of the shipped one with the same
+# id (a field-level merge, not a full replace -- an id-only URL override
+# still keeps the base entry's other fields, e.g. `selfHosted`, which
+# decides whether the settings-cog edit UI even shows for that row; a
+# full-replace merge was tried first and silently dropped that flag the
+# moment a source was overridden once), or adds an entirely new source if
+# the id doesn't exist upstream. Every other function in this file keeps
+# reading $SOURCES_FILE unchanged -- this just repoints it once, up front,
+# to the merged result.
 LOCAL_SOURCES_FILE="$STATE_DIR/sources.local.json"
 if [[ -f "$LOCAL_SOURCES_FILE" ]]; then
   MERGED_SOURCES_FILE="$STATE_DIR/.sources.merged.json"
   jq -s '
-    (.[1] | map(.id)) as $local_ids
-    | (.[0] | map(select(.id as $id | ($local_ids | index($id)) | not))) + .[1]
+    (.[0] | map({(.id): .}) | add // {}) as $base
+    | (.[1] | map({(.id): .}) | add // {}) as $local
+    | ($base * $local) | to_entries | map(.value)
   ' "$SOURCES_FILE" "$LOCAL_SOURCES_FILE" >"$MERGED_SOURCES_FILE"
   SOURCES_FILE="$MERGED_SOURCES_FILE"
 fi
@@ -71,6 +77,9 @@ Commands:
                        Omarchy web app. Used by the bar widget's "Manage sources" popup.
   webapp-install <source_id>  Install a configured source as a real Omarchy web app
                        (Menu > Install > Web App, pre-filled and non-interactive).
+  set-source-url <source_id> <url>  Write a personal URL override to sources.local.json
+                       for a self-hosted source (Plex, Jellyfin). Used by the bar
+                       widget's settings-cog edit box; safe to run by hand too.
   welcome-seen         Mark the first-run welcome popup as shown, so it never auto-opens
                        again. Called by the bar widget itself, not meant to be run by hand.
 EOF
@@ -164,7 +173,7 @@ cmd_sources_status() {
   local installed_execs
   installed_execs=$(grep -h "^Exec=omarchy-launch-webapp " "$HOME/.local/share/applications/"*.desktop 2>/dev/null || true)
 
-  jq -c '.[] | {id, name, url}' "$SOURCES_FILE" | while IFS= read -r src; do
+  jq -c '.[] | {id, name, url, selfHosted}' "$SOURCES_FILE" | while IFS= read -r src; do
     host=$(host_from_url "$(jq -r '.url' <<<"$src")")
     installed=false
     [[ -z "$host" ]] || { grep -q "$host" <<<"$installed_execs" && installed=true; }
@@ -198,6 +207,27 @@ cmd_webapp_install() {
   url=$(jq -r '.url' <<<"$src")
   omarchy-webapp-install "$name" "$url" "" \
     || omarchy-webapp-install "$name" "$url" "video-x-generic"
+}
+
+# Writes/updates a personal URL override in sources.local.json -- backs
+# the "Manage sources" popup's settings-cog edit box for self-hosted
+# sources. Same file the README documents for hand-editing; this is just
+# a UI-driven way to write it instead of requiring a text editor. Merges
+# rather than overwrites: an existing override for a *different* source
+# id is preserved, only $source_id's entry is replaced or added.
+cmd_set_source_url() {
+  local source_id="$1" url="$2" src name existing merged
+  [[ -n "$source_id" && -n "$url" ]] || { echo "Usage: media-pip set-source-url <source_id> <url>" >&2; exit 1; }
+  src=$(source_by_id "$source_id")
+  [[ -n "$src" ]] || { echo "Unknown source: $source_id" >&2; exit 1; }
+  name=$(jq -r '.name' <<<"$src")
+
+  existing='[]'
+  [[ ! -f "$LOCAL_SOURCES_FILE" ]] || existing=$(cat "$LOCAL_SOURCES_FILE")
+  merged=$(jq -c --arg id "$source_id" --arg name "$name" --arg url "$url" '
+    map(select(.id != $id)) + [{id: $id, name: $name, url: $url}]
+  ' <<<"$existing")
+  echo "$merged" >"$LOCAL_SOURCES_FILE"
 }
 
 next_source_id() {
@@ -589,6 +619,7 @@ main() {
     status) cmd_status ;;
     sources-status) cmd_sources_status ;;
     webapp-install) cmd_webapp_install "${2:-}" ;;
+    set-source-url) cmd_set_source_url "${2:-}" "${3:-}" ;;
     welcome-seen) cmd_welcome_seen ;;
     -h | --help | "") usage 0 ;;
     *)
