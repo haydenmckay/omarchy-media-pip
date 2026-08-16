@@ -166,3 +166,26 @@ on it directly.
   isn't driven by a Hyprland event to hook a refresh off of, so it's
   refreshed explicitly instead: once on `Component.onCompleted`, and again
   whenever `installWebapp()`'s process exits or the popup is opened.
+- Self-hosted sources (Plex, Jellyfin, `selfHosted: true` in sources.json)
+  get a settings-cog in "Manage sources" that opens an inline
+  `qs.Ui.TextField` writing to `sources.local.json` via a new
+  `media-pip set-source-url <id> <url>` command -- see README's
+  "Self-hosted sources: personal overrides" section. The merge (base
+  `sources.json` + `sources.local.json`, matched by id) is field-level, not
+  a full-entry replace, and is implemented independently on both sides
+  (`bin/media-pip`'s `jq '($base * $local)'` and `Service.qml`'s
+  `baseSources`/`localSources`/computed `sources` using `Object.assign`)
+  -- keep both in sync if this changes. `Service.qml`'s reactive
+  `openSources`/`activeSourceHost`/`pipWindowLive` all depend on this
+  merged `sources`, not the raw base file, specifically so an active
+  override actually affects window matching.
+- A popup row whose `height` binding changes when revealing an inline
+  `TextField` (e.g. `editingUrl ? fieldHeight : otherHeight`) resizes not
+  just the row but the whole popup, if the popup's own `contentHeight` is
+  bound to its content Column's `implicitHeight` (as `PopupCard` usages
+  here are). That resize races the field's `Qt.callLater(forceActiveFocus)`
+  call -- symptom: the field is hard to type into and Enter alone doesn't
+  submit until an extra click lands first. Fix is to size the row for
+  every state up front (e.g. `Math.max()` across all possible children's
+  `implicitHeight`) so opening the editor never changes the row's height
+  at all, not to try to fix the focus timing after the fact.
