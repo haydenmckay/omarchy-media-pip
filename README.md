@@ -49,6 +49,21 @@ omarchy plugin add https://github.com/haydenmckay/omarchy-media-pip.git --enable
 then `omarchy plugin enable io.github.haydenmckay.media-pip --section right`
 if it doesn't enable itself.)
 
+### Uninstall
+
+```bash
+omarchy plugin remove io.github.haydenmckay.media-pip
+```
+
+This deletes the plugin directory; nothing else on your system depends on
+it. It leaves behind `~/.local/state/media-pip/` (PiP state, and the
+self-staged copy of the CLI the plugin runs from — see `Service.qml`'s
+`cliPath` comment) and any Omarchy web apps you installed through the
+"Manage sources" popup, since those are your data, not the plugin's —
+remove `~/.local/state/media-pip/` yourself if you want a completely clean
+slate, and `omarchy webapp remove <name>` for any web app you no longer
+want.
+
 ## Keybindings
 
 Add these to `~/.config/hypr/bindings.lua` (already done on this machine —
