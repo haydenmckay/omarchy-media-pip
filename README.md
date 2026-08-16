@@ -145,6 +145,30 @@ plugin supplies everything else: a bar icon and OSD feedback.
   (ships with Omarchy for voxtype/dictation; `media-pip` starts its
   `ydotool.service` on demand since it isn't kept running by default).
 
+### Self-hosted sources: personal overrides
+
+Plex and Jellyfin ship with a placeholder/localhost URL, since there's no
+public address to point at for a self-hosted server. Don't edit
+`sources.json` itself to fix that — it's part of this git repo, so a
+direct edit either risks getting committed and pushed (leaking a home
+server's LAN address publicly) or getting silently reset on the next
+`omarchy plugin update`.
+
+Instead, create `~/.local/state/media-pip/sources.local.json` with just
+the sources you want to override:
+
+```json
+[
+  { "id": "plex", "name": "Plex", "url": "http://192.168.1.50:32400/web/index.html" }
+]
+```
+
+Entries match by `id` — a local entry replaces the shipped source with
+the same id, or adds an entirely new one if the id doesn't exist upstream.
+This file lives outside the plugin's install directory entirely, so it
+survives updates and reinstalls, and it's `.gitignore`d as a backstop even
+if created inside a checkout by mistake.
+
 ## Known limitations
 
 - Space reservation (`SUPER ALT + R` / `media-pip reservation on`) has no
@@ -166,10 +190,8 @@ plugin supplies everything else: a bar icon and OSD feedback.
   to read the page's actual fullscreen state from outside it. Press `f`
   manually if that happens.
 - `plex`'s `url` in `sources.json` defaults to
-  `http://localhost:32400/web/index.html` — right if Plex Media Server
-  runs on the same machine as Omarchy, wrong otherwise. Edit it to your
-  server's actual LAN IP or hostname if Plex runs elsewhere.
-- `jellyfin`'s `url` in `sources.json` (`http://jellyfin.local:8096/`) is a
-  placeholder for the same reason — Jellyfin is self-hosted too, so there's
-  no fixed public URL to ship. Edit it to your actual server before using
-  that source.
+  `http://localhost:32400/web/index.html`, and `jellyfin`'s to
+  `http://jellyfin.local:8096/` — both self-hosted, so there's no fixed
+  public address to ship. Use a personal override (below) rather than
+  editing `sources.json` directly if your server's elsewhere, so the fix
+  doesn't need repeating on every plugin update.

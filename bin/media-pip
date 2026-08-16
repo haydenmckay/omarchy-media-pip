@@ -15,6 +15,25 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/media-pip"
 STATE_FILE="$STATE_DIR/state.json"
 mkdir -p "$STATE_DIR"
 
+# Personal overrides -- a self-hosted source's real LAN address, say --
+# that must never end up in this repo's tracked sources.json, since that
+# file ships in a public git checkout. Lives in the state dir specifically
+# so it survives `omarchy plugin update`/reinstall, unlike anything placed
+# inside the plugin's own (git-managed) install directory. Entries match
+# by id: a local entry overrides the shipped one with the same id, or
+# adds an entirely new source if the id doesn't exist upstream. Every
+# other function in this file keeps reading $SOURCES_FILE unchanged --
+# this just repoints it once, up front, to the merged result.
+LOCAL_SOURCES_FILE="$STATE_DIR/sources.local.json"
+if [[ -f "$LOCAL_SOURCES_FILE" ]]; then
+  MERGED_SOURCES_FILE="$STATE_DIR/.sources.merged.json"
+  jq -s '
+    (.[1] | map(.id)) as $local_ids
+    | (.[0] | map(select(.id as $id | ($local_ids | index($id)) | not))) + .[1]
+  ' "$SOURCES_FILE" "$LOCAL_SOURCES_FILE" >"$MERGED_SOURCES_FILE"
+  SOURCES_FILE="$MERGED_SOURCES_FILE"
+fi
+
 MARGIN="${MEDIA_PIP_MARGIN:-16}"
 ASPECT_W="${MEDIA_PIP_ASPECT_W:-16}"
 ASPECT_H="${MEDIA_PIP_ASPECT_H:-9}"

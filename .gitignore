@@ -25,3 +25,9 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Personal source overrides (self-hosted Plex/Jellyfin URLs etc) --
+# the real location is ~/.local/state/media-pip/sources.local.json,
+# outside this repo entirely, but ignore it here too as a backstop in
+# case anyone creates it inside a checkout by mistake.
+sources.local.json
