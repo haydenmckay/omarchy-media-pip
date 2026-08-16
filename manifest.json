@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.haydenmckay.media-pip",
+  "name": "Media PiP",
+  "version": "1.0.0",
+  "author": "haydenmckay",
+  "license": "MIT",
+  "description": "Media PiP streamlines your media streaming setup with one-click Omarchy web apps for Plex, YouTube, Netflix, and more -- then lets you float any of them into a corner as picture-in-picture whenever you want it out of the way.",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Media PiP",
+    "description": "Toggle picture-in-picture mode and manage your media web apps",
+    "category": "Media",
+    "allowMultiple": false
+  }
+}

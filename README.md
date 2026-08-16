@@ -1,143 +1,140 @@
 # omarchy-media-pip
 
-Picture-in-picture mode for media (Plex, YouTube, extensible to others like
-Jellyfin) on Omarchy/Hyprland: float, pin, and corner-snap a source's window
-to a few fixed sizes, with a real Quickshell bar icon, hotkeys, and
-toggleable screen-space reservation so tiled windows never render under it.
+Streamlines your media streaming setup on Omarchy with one-click
+Omarchy web apps for Plex, YouTube, Netflix, and the rest of your
+streaming services — then lets you float any of them into a corner as
+picture-in-picture whenever you want them out of the way.
+
+The setup half is what makes the rest painless: set up all your streaming
+web apps from one place, then every source you've added is available as
+PiP with a click. Right-click the bar icon any time for the same checklist
+across every configured source. The PiP half does what it says: float,
+pin, and corner-snap any configured source's window to a few fixed sizes,
+with a real Quickshell bar icon and hotkeys (see `sources.json` for the
+ten sources it ships with).
+
+## Screenshots
+
+**First run.** A one-time welcome popup offers to set up the media
+services you use as proper Omarchy web apps — never shown again once
+dismissed.
+
+![Welcome popup on first launch](assets/welcome-popup.png)
+
+**Manage sources, any time.** Right-click the bar icon for the same
+checklist — installed services show a checkmark, everything else is a
+one-click install.
+
+![Manage sources checklist popup](assets/manage-sources-popup.png)
+
+**Multiple sources at once.** With more than one source's window open,
+clicking the bar icon asks which to PiP instead of guessing — shown here
+with YouTube tiled, the Plex/YouTube/Netflix picker open top-right, and
+Netflix already floating as PiP bottom-right.
+
+![Source picker with three sources open](assets/source-picker-live.png)
+
+**Out of your way.** PiP sits in the corner while you work — here running
+alongside a terminal session, well clear of anything else on screen.
+
+![PiP floating in the corner during a coding session](assets/pip-in-action-corner.png)
 
 ## Install
 
 ```bash
-./install.sh
-omarchy plugin enable trigz.media-pip --section right   # if not already enabled
+omarchy plugin add https://github.com/haydenmckay/omarchy-media-pip.git --enable
 ```
 
-Add the hotkeys below to `~/.config/hypr/bindings.lua` (already done on this
-machine — see that file for the exact lines):
+(For local development against a checkout of this repo instead: `./install.sh`,
+then `omarchy plugin enable io.github.haydenmckay.media-pip --section right`
+if it doesn't enable itself.)
+
+## Keybindings
+
+Add these to `~/.config/hypr/bindings.lua` (already done on this machine —
+see that file for the exact lines). This is the whole list — deliberately
+short, because the bar icon covers the rest and Omarchy's own window
+hotkeys apply for free (see below).
 
 | Keys | Action |
 |---|---|
 | `SUPER ALT + P` | Toggle PiP (show/hide current source) |
-| `SUPER ALT SHIFT + P` | Cycle size (small/medium/large) |
-| `SUPER CTRL ALT + P` | Cycle corner |
+| `SUPER ALT SHIFT + P` | Cycle size (small → medium → large) |
+| `SUPER CTRL ALT + P` | Cycle corner (bottom-right → bottom-left → top-left → top-right) |
 | `SUPER ALT + O` | Cycle source (Plex → YouTube → …) |
-| `SUPER ALT + R` | Toggle space reservation on/off |
+| `SUPER ALT + R` | Toggle space reservation (works if bound, but has no bar-icon path — see "Known limitations") |
 
-Click the bar icon to toggle PiP; right-click toggles reservation; scroll
-cycles size.
+**Mouse:**
+
+| Action | Result |
+|---|---|
+| Left-click bar icon | Toggle PiP for the active source — or open the source picker if more than one is open (see screenshots above) |
+| Right-click bar icon | Open "Manage sources…" |
+| Scroll bar icon up/down | Cycle size |
+| `SUPER` + left-drag on the PiP window | Move it freely |
+| `SUPER` + right-drag on the PiP window | Resize it freely |
+
+The last two are Omarchy defaults, not plugin-specific — the PiP window is
+a normal floated+pinned Hyprland window underneath, so dragging it around
+already just works, same as `SUPER + Backspace` for toggling its
+transparency. A manual move/resize just repositions the window; it doesn't
+update the stored corner/size preset, so the next `size`/`corner` cycle
+snaps back to whatever the preset says.
+
+### Picking a source when more than one is open
+
+Toggling PiP on doesn't always need `SUPER ALT + O` first. `media-pip`
+checks which configured sources' windows are actually open
+(`open_source_ids` / `auto_detect_source_id` in `bin/media-pip`):
+
+- Exactly one open → that one, automatically, even if a different source
+  was last active.
+- None open → falls back to the last-active (or default) source, and
+  launches it.
+- More than one open at once → ambiguous. The hotkey path falls back the
+  same as "none open," but the bar icon instead shows a small picker on
+  click, listing whichever of the open ones apply — see `openSources` in
+  `Service.qml` and the `PopupCard` in `BarWidget.qml`.
 
 ## Architecture
 
 **Hybrid.** Real video content stays in an actual Brave app-mode window —
-DRM, auth, YouTube's own player all just work for free. A Quickshell plugin
-supplies everything else: a bar icon, OSD feedback, and a layer-shell
-"spacer" surface that reserves real screen space.
+DRM, auth, each source's own player all just work for free. A Quickshell
+plugin supplies everything else: a bar icon and OSD feedback.
 
 - `bin/media-pip` — CLI that does the actual work: launches/finds the
   source's browser window and drives it with `hyprctl dispatch
   "hl.dsp.window.*"` calls (float, pin, resize, move). Writes all state to
   `~/.local/state/media-pip/state.json`.
-- `plugin/Service.qml` — headless Quickshell service. Mirrors that state
-  file live via `FileView`, and hosts the reservation spacer.
-- `plugin/SpacerWindow.qml` — an invisible `PanelWindow` anchored to a
+- `Service.qml` — headless Quickshell service. Mirrors that state
+  file live via `FileView`.
+- `SpacerWindow.qml` — an invisible `PanelWindow` anchored to a
   single edge with an `exclusiveZone`, so Hyprland's tiling layout reserves
-  real space for it.
-- `plugin/BarWidget.qml` — the bar icon.
-- `plugin/sources.json` — the source list (edit this to add e.g. Jellyfin).
-
-Hotkeys and the bar widget both just shell out to `media-pip`, so there's
-one source of truth regardless of what triggered a change.
-
-### Why hotkeys call the CLI rather than Quickshell IPC
-
-Plugins *can* expose arbitrary IPC methods — Quickshell's `IpcHandler`
-lets a plugin declare named functions and `omarchy-shell <target> <method>`
-routes to them (`omarchy.clock` does exactly this with `cycleFormat`,
-`toggleWeekStart`). An earlier version of this file claimed otherwise; that
-was wrong, and it's why this project reached for a CLI first.
-
-The CLI is still the right home for the *window-management* logic, for a
-reason that survives that correction: `hyprctl clients -j` is a complete,
-synchronous snapshot, whereas Quickshell's `Hyprland.toplevels` populates
-`lastIpcObject` asynchronously and partially — a freshly-mapped window
-arrives with `class`/`title` still undefined until a refresh lands. Matching
-a browser window *by class at the moment it appears* is markedly simpler
-against the synchronous snapshot.
-
-Quickshell's live model is used for what it's genuinely better at: knowing,
-reactively and with no polling, whether the window still exists. See the
-reservation interlock below.
-
-### The reservation interlock
-
-Reserving screen space is the one thing here that degrades the desktop for
-windows that aren't ours, so it is gated on three things: the user turned
-PiP on, the user opted into reservation, **and** the source's window is
-live in `Hyprland.toplevels` right now.
-
-That third condition is the important one. Persisted "PiP is on" state was
-once trusted on its own, and a stale flag left a 480px strip reserved for a
-window that no longer existed — squeezing the bar on every shell start. The
-live gate makes that unrepresentable rather than corrected after the fact,
-and it fails toward not-reserving. Verified: the toplevel model drops a
-closed window immediately off Hyprland's event socket, so killing the
-browser window by any means (not just through this tool) releases the
-space at once.
-
-`media-pip reconcile` still runs at service start to tidy the persisted
-flag, but nothing load-bearing depends on it being correct any more.
-
-### Window targeting
-
-Not "whatever's focused" (that's `~/Work/hypr-pip`, which stays as a
-separate, general-purpose tool) — a specific source needs to be found
-reliably regardless of what's currently focused. `--class=` does nothing
-for Chromium/Brave under Wayland; window class is auto-derived from the
-URL's host, so that's what gets matched (`source_host` in `bin/media-pip`,
-stripping the port — a URL's port never survives into the class string).
-
-### Reservation is a full-edge strip, not a corner box
-
-wlr-layer-shell only reserves an exclusive zone for a surface anchored to a
-**single** edge — a corner-anchored surface (two edges) positions correctly
-but reserves nothing (verified empirically this session: `hyprctl monitors`
-reserved area only changed for single-edge anchoring). So the spacer always
-reserves a full-height (or full-width) strip on whichever edge the PiP's
-corner is nearest, sized to the PiP's current width. It guarantees nothing
-ever renders under the PiP, in both dwindle and master layouts, at the
-monitor level (upstream of Hyprland's layout engine).
-
-The trade-off is real and is why reservation is **off by default**: a
-480×270 corner box reserves a full-height 480px column, roughly 4× the area
-the window actually occupies. Turn it on per-session with `SUPER ALT + R`
-(or right-click the bar icon) when you actually want tiles to keep clear.
-
-## Deploying plugin changes
-
-`~/.config/omarchy/plugins/trigz.media-pip` must be a **real directory**,
-not a symlink — `omarchy plugin validate` rejects symlinks anywhere under a
-plugin folder, including the folder itself being one. Run `./install.sh`
-after editing anything under `plugin/` to sync the copy.
-
-## Future: native embedded panel
-
-QtWebEngine is installed on this system, which raised the idea of rendering
-Plex/YouTube directly inside a Quickshell panel instead of puppeting a
-separate browser window. Tried it: `WebEngineView` inside a Quickshell
-`PanelWindow` crashes Quickshell outright (`FATAL: Argument list is empty,
-the program name is not passed to QCoreApplication`) — a known, open,
-unfixed upstream bug:
-[quickshell-mirror/quickshell#298](https://github.com/quickshell-mirror/quickshell/issues/298).
-
-If that gets fixed upstream, the natural migration is: replace the Brave
-app-window + `hyprctl` positioning with a native `WebEngineView` rendered
-directly inside the plugin, dropping the external browser process and
-window-class targeting entirely. The reservation mechanism stays valid
-either way — it's a wlr-layer-shell protocol constraint, not a
-WebEngineView one — so `SpacerWindow.qml` shouldn't need to change.
+  real space for it, active whenever reservation is turned on (`SUPER ALT
+  + R` if bound, or `media-pip reservation on`) — off by default, and with
+  no bar-icon path to it, since day to day nobody actually needed tiled
+  windows kept clear of the PiP corner.
+- `BarWidget.qml` — the bar icon (a television glyph), the
+  source-picker popup shown when more than one source is open at once, and
+  the "Manage sources" popup (right-click).
+- `sources.json` — the source list (Plex, YouTube, Netflix, and a
+  handful of other streaming services out of the box — edit this to add
+  more, e.g. a self-hosted Jellyfin). A source can set `onEnableKey` to
+  have `media-pip` type that key into its window every time PiP turns on
+  for it — YouTube uses `"f"` to drop into its own in-page fullscreen
+  player, which fits a small PiP box far better than the normal
+  header/sidebar/comments layout (verified empirically to stay contained
+  inside the small window rather than hijacking the whole monitor — see
+  "Known limitations"). Not yet verified for the other bundled sources.
+  Sent via `ydotool`
+  (ships with Omarchy for voxtype/dictation; `media-pip` starts its
+  `ydotool.service` on demand since it isn't kept running by default).
 
 ## Known limitations
 
+- Space reservation (`SUPER ALT + R` / `media-pip reservation on`) has no
+  bar-icon path — nobody was actually using it day to day, so it's parked
+  rather than surfaced, though the code and hotkey both still work.
 - Two `toggle`/`size`/`corner` calls for a source with no window open yet,
   issued within about a second of each other, can each fail to see the
   other's in-flight launch and open a duplicate window (a `flock` guard
@@ -145,3 +142,19 @@ WebEngineView one — so `SpacerWindow.qml` shouldn't need to change.
   `bin/media-pip`). Not an issue once a source's window already exists;
   only the very first cold-open per source per session is slow enough to
   matter.
+- `onEnableKey` (YouTube's `f`) sends a real keypress, which *toggles*
+  in-page fullscreen rather than forcing it on. It fires every time PiP
+  turns on, which is right in the common case (you were already on a video
+  in a normal tab, then toggled PiP on), but re-toggling PiP on and off
+  again without navigating away in between can flip it back to YouTube's
+  normal chrome instead of re-entering fullscreen — there's no reliable way
+  to read the page's actual fullscreen state from outside it. Press `f`
+  manually if that happens.
+- `plex`'s `url` in `sources.json` defaults to
+  `http://localhost:32400/web/index.html` — right if Plex Media Server
+  runs on the same machine as Omarchy, wrong otherwise. Edit it to your
+  server's actual LAN IP or hostname if Plex runs elsewhere.
+- `jellyfin`'s `url` in `sources.json` (`http://jellyfin.local:8096/`) is a
+  placeholder for the same reason — Jellyfin is self-hosted too, so there's
+  no fixed public URL to ship. Edit it to your actual server before using
+  that source.

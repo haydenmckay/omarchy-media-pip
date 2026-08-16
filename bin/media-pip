@@ -2,7 +2,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-SOURCES_FILE="$SCRIPT_DIR/../plugin/sources.json"
+# Service.qml invokes a copy of this script staged outside the plugin
+# directory (see cliPath's comment there for why), so $SCRIPT_DIR at
+# runtime is generally *not* the plugin's real install directory --
+# MEDIA_PIP_SOURCES_DIR carries the real one through as an env var. Falls
+# back to the script's own location for local dev (./install.sh's copy
+# under the live plugin dir, where SCRIPT_DIR/.. genuinely is correct) and
+# for running this script straight out of a git checkout.
+SOURCES_FILE="${MEDIA_PIP_SOURCES_DIR:-$SCRIPT_DIR/..}/sources.json"
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/media-pip"
 STATE_FILE="$STATE_DIR/state.json"
@@ -19,7 +26,7 @@ CORNER_NAMES=(bottom-right bottom-left top-left top-right)
 # reservationEnabled defaults off: reserving space claims a coarse full-edge
 # strip (a wlr-layer-shell constraint, see plugin/SpacerWindow.qml), which is
 # a big enough side effect on the rest of the desktop to be opt-in.
-DEFAULT_STATE='{"activeSourceId":null,"pipActive":false,"reservationEnabled":false,"sizeIdx":0,"cornerIdx":0,"reservation":{"edge":"right","widthPx":0}}'
+DEFAULT_STATE='{"activeSourceId":null,"pipActive":false,"reservationEnabled":false,"sizeIdx":0,"cornerIdx":0,"reservation":{"edge":"right","widthPx":0},"welcomeShown":false}'
 
 [[ -f "$STATE_FILE" ]] || echo "$DEFAULT_STATE" >"$STATE_FILE"
 
@@ -28,7 +35,11 @@ usage() {
 Usage: media-pip <command>
 
 Commands:
-  toggle              Show/hide PiP for the active source (float+pin+snap, or restore to tiled)
+  toggle [source_id]  Show/hide PiP (float+pin+snap, or restore to tiled). With no source_id,
+                       auto-detects: the one configured source with a window currently open
+                       wins; with zero or several open, falls back to the last-active source.
+                       Pass source_id explicitly to skip auto-detection (used by the bar
+                       widget's picker when several sources are open at once).
   size                Cycle size preset: ${SIZE_NAMES[*]}. Enables PiP first if needed.
   corner              Cycle corner: ${CORNER_NAMES[*]}. Enables PiP first if needed.
   source              Cycle to the next configured source, switching PiP to it live if active.
@@ -37,6 +48,12 @@ Commands:
                        is gone or no longer actually floating+pinned. Never launches
                        anything. Called by the Quickshell service on every shell start.
   status               Print current state.
+  sources-status       Print each configured source with whether it's already an installed
+                       Omarchy web app. Used by the bar widget's "Manage sources" popup.
+  webapp-install <source_id>  Install a configured source as a real Omarchy web app
+                       (Menu > Install > Web App, pre-filled and non-interactive).
+  welcome-seen         Mark the first-run welcome popup as shown, so it never auto-opens
+                       again. Called by the bar widget itself, not meant to be run by hand.
 EOF
   exit "${1:-0}"
 }
@@ -75,6 +92,82 @@ source_by_id() { jq -c --arg id "$1" '.[] | select(.id == $id)' "$SOURCES_FILE";
 
 first_source_id() { jq -r '.[0].id' "$SOURCES_FILE"; }
 
+source_on_enable_key() { jq -r '.onEnableKey // empty' <<<"$(source_by_id "$1")"; }
+
+# ------------------------------------------------------- webapp onboarding
+
+# Path to the installed Omarchy web app .desktop file for this host, if one
+# exists. Every Omarchy web app (Menu > Install > Web App, or
+# omarchy-webapp-install) is a plain .desktop file with a line of the form
+# `Exec=omarchy-launch-webapp <url>` -- there's no separate manifest to
+# check. `head -1` makes an empty result (no match) exit 0, not the grep
+# failure -- required so this composes safely under `set -e`.
+webapp_desktop_file_for_host() {
+  local host="$1"
+  grep -l "^Exec=omarchy-launch-webapp .*${host}" \
+    "$HOME/.local/share/applications/"*.desktop 2>/dev/null | head -1
+}
+
+# One-time nudge (per source, forever, not per session) toward setting up
+# the "real" Omarchy web app for a source that doesn't have one yet -- e.g.
+# a freshly-added sources.json entry for something like Netflix, versus
+# Plex/YouTube which already are Omarchy web apps on a typical install.
+# Purely cosmetic: media-pip's own launch (see launch_source_window) works
+# identically either way, so this never blocks or delays the actual PiP
+# launch, only informs. Fires from enable_pip, not launch_source_window,
+# since it's about "is this source properly set up" in general, independent
+# of whether this particular toggle happens to need a fresh window.
+maybe_nudge_webapp_setup() {
+  local source_id="$1" host="$2" url="$3" name="$4"
+  [[ -z "$(webapp_desktop_file_for_host "$host")" ]] || return 0
+  [[ "$(state_get ".webappNudged[\"$source_id\"]" false)" != "true" ]] || return 0
+
+  omarchy-notification-send -a "Media PiP" \
+    "Set up $name as a web app?" \
+    "PiP works fine without it, but installing $name via Menu -> Install -> Web App (URL: $url) adds it to your app launcher like Plex and YouTube already are." \
+    >/dev/null 2>&1 || true
+
+  state_merge "$(jq -nc --arg id "$source_id" '{webappNudged:{($id):true}}')"
+}
+
+# Every configured source with whether it's already an installed Omarchy web
+# app -- consumed by the bar widget's "Manage sources" popup so it can show
+# a checkmark or an install action per source, without re-implementing the
+# .desktop scan in QML.
+#
+# The `.desktop` directory is scanned once up front rather than once per
+# source (webapp_desktop_file_for_host's own per-host scan is fine for its
+# single-host call site in maybe_nudge_webapp_setup, but re-globbing and
+# re-grepping every installed .desktop file for each of ~10 sources here
+# would be ~10x the directory I/O for no benefit -- membership in one
+# pre-fetched blob of Exec lines is just as correct).
+cmd_sources_status() {
+  local installed_execs
+  installed_execs=$(grep -h "^Exec=omarchy-launch-webapp " "$HOME/.local/share/applications/"*.desktop 2>/dev/null || true)
+
+  jq -c '.[] | {id, name, url}' "$SOURCES_FILE" | while IFS= read -r src; do
+    host=$(host_from_url "$(jq -r '.url' <<<"$src")")
+    installed=false
+    [[ -z "$host" ]] || { grep -q "$host" <<<"$installed_execs" && installed=true; }
+    jq -c --argjson installed "$installed" '. + {installed: $installed}' <<<"$src"
+  done | jq -sc '.'
+}
+
+# Installs a configured source as a real Omarchy web app -- the same thing
+# Menu > Install > Web App does, just pre-filled and non-interactive.
+# Favicon fetch (empty icon arg triggers omarchy-webapp-install's own
+# auto-fetch) can take a few seconds over the network; runs synchronously
+# since this is a deliberate, single user-initiated action from the
+# "Manage sources" popup, not something on any hot path.
+cmd_webapp_install() {
+  local source_id="$1" src name url
+  src=$(source_by_id "$source_id")
+  [[ -n "$src" ]] || { echo "Unknown source: $source_id" >&2; exit 1; }
+  name=$(jq -r '.name' <<<"$src")
+  url=$(jq -r '.url' <<<"$src")
+  omarchy-webapp-install "$name" "$url" ""
+}
+
 next_source_id() {
   local current="$1"
   jq -r --arg cur "$current" '
@@ -89,6 +182,15 @@ active_source_id() {
   id=$(state_get '.activeSourceId' "")
   if [[ -z "$id" || "$id" == "null" ]]; then id=$(first_source_id); fi
   echo "$id"
+}
+
+# Source ids whose window is currently open, regardless of whether this tool
+# was the one that launched it (e.g. the user opened Plex by hand).
+open_source_ids() {
+  local id
+  jq -r '.[].id' "$SOURCES_FILE" | while IFS= read -r id; do
+    window_address_for "$id" >/dev/null 2>&1 && echo "$id"
+  done
 }
 
 # --------------------------------------------------------------- geometry
@@ -162,12 +264,12 @@ apply_geometry() {
 
 # ------------------------------------------------------------- window mgmt
 
-source_host() {
-  # Strip scheme, then stop at the first ':' or '/' -- a port survives
-  # in the URL but never appears in Chromium's derived WM class, so
-  # leaving it in here breaks the class-contains-host match entirely.
-  jq -r '.url' <<<"$(source_by_id "$1")" | sed -E 's#^[a-z]+://##; s#[:/].*##'
-}
+# Strip scheme, then stop at the first ':' or '/' -- a port survives in the
+# URL but never appears in Chromium's derived WM class, so leaving it in
+# here breaks the class-contains-host match entirely.
+host_from_url() { sed -E 's#^[a-z]+://##; s#[:/].*##' <<<"$1"; }
+
+source_host() { host_from_url "$(jq -r '.url' <<<"$(source_by_id "$1")")"; }
 
 # Chromium derives WM class from the app URL's host and ignores --class
 # under Wayland/Ozone (verified empirically: reserved area never changed
@@ -198,7 +300,7 @@ resolve_browser_exec() {
 }
 
 launch_source_window() {
-  local source_id="$1" url name host before candidate waited browser_exec
+  local source_id="$1" url name host candidate waited browser_exec
 
   url=$(jq -r '.url' <<<"$(source_by_id "$source_id")")
   name=$(jq -r '.name' <<<"$(source_by_id "$source_id")")
@@ -208,7 +310,6 @@ launch_source_window() {
   browser_exec=$(resolve_browser_exec)
   [[ -n "$browser_exec" ]] || { echo "Could not resolve default browser" >&2; exit 1; }
 
-  before=$(hyprctl clients -j | jq -r '.[].address')
   # Routed through a transient systemd --user scope so it's fully detached
   # from this script's own process tree.
   systemd-run --user --scope --collect -q -- "$browser_exec" --app="$url" >/dev/null 2>&1 &
@@ -246,8 +347,54 @@ ensure_window() {
 
 # -------------------------------------------------------------------- pip
 
+# Some sources look better with an in-page key sent every time PiP turns on
+# for them -- YouTube's own 'f' hotkey drops its header/sidebar/comments
+# chrome and fills the window with just the video, which matters a lot more
+# at PiP sizes than in a normal tab. Verified empirically (screenshotting
+# before/after): requesting fullscreen from a floated+pinned app-mode window
+# stays contained inside that window's own bounds -- Hyprland never reports
+# it as a real fullscreen client -- so this can't hijack the whole monitor
+# the way native fullscreen normally would.
+#
+# Fires on every enable, not just a cold launch: this project's actual usage
+# is "already sitting on a video, then toggle PiP on," so a video is
+# typically already loaded well before this ever runs. 'f' *toggles*
+# fullscreen rather than forcing it on, so re-enabling PiP without the page
+# having changed in between (no navigation, still mid-session) can flip it
+# back off -- there's no reliable way to read the page's own fullscreen
+# state from outside it, so this is a known, accepted rough edge: press 'f'
+# manually to fix it if that happens.
+send_on_enable_key() {
+  local source_id="$1" addr="$2" name="$3" fresh_launch="$4" key
+  key=$(source_on_enable_key "$source_id")
+  [[ -n "$key" ]] || return 0
+
+  # ydotoold ships with Omarchy (voxtype/dictation depends on it) but its
+  # unit is disabled by default and isn't otherwise kept running -- start it
+  # on demand rather than failing every time until someone happens to have
+  # it up already.
+  systemctl --user is-active --quiet ydotool.service \
+    || systemctl --user start ydotool.service 2>/dev/null || true
+
+  local prev_addr; prev_addr=$(hyprctl activewindow -j | jq -r '.address // empty')
+  hdsp "hl.dsp.focus({window='address:$addr'})" || true
+  # Only a fresh launch needs a moment for the page's JS to load and attach
+  # its own keyboard shortcut listeners -- an already-open window (the
+  # common case here) gets the key immediately.
+  [[ -z "$fresh_launch" ]] || sleep "${MEDIA_PIP_KEY_DELAY:-2.5}"
+  ydotool type -- "$key" \
+    || echo "media-pip: couldn't send '$key' to $name (is ydotoold running?)" >&2
+  [[ -z "$prev_addr" || "$prev_addr" == "$addr" ]] \
+    || hdsp "hl.dsp.focus({window='address:$prev_addr'})" || true
+}
+
 enable_pip() {
-  local source_id="$1" addr mon_id win size_idx corner_idx name
+  local source_id="$1" addr mon_id win size_idx corner_idx name url host src fresh_launch=""
+  window_address_for "$source_id" >/dev/null 2>&1 || fresh_launch=1
+  src=$(source_by_id "$source_id")
+  name=$(jq -r '.name' <<<"$src")
+  url=$(jq -r '.url' <<<"$src")
+  host=$(host_from_url "$url")
   # A plain `x=$(cmd)` assignment does not reliably trip `set -e` when cmd
   # fails, so ensure_window's failure must be checked explicitly here --
   # otherwise this proceeds to dispatch Hyprland calls against an empty
@@ -264,7 +411,9 @@ enable_pip() {
   corner_idx=$(state_get '.cornerIdx' 0)
   apply_geometry "$addr" "$mon_id" "$size_idx" "$corner_idx"
 
-  name=$(jq -r '.name' <<<"$(source_by_id "$source_id")")
+  send_on_enable_key "$source_id" "$addr" "$name" "$fresh_launch"
+  maybe_nudge_webapp_setup "$source_id" "$host" "$url" "$name"
+
   state_merge "$(jq -nc --arg id "$source_id" '{activeSourceId:$id,pipActive:true}')"
   osd "PiP: $name — ${CORNER_NAMES[$corner_idx]} — ${SIZE_NAMES[$size_idx]}"
 }
@@ -282,14 +431,33 @@ disable_pip() {
 
 # ---------------------------------------------------------------- commands
 
+# Which source to open when PiP is off and no explicit source was given
+# (used by toggle/size/corner alike): with exactly one configured source's
+# window currently open, that's an unambiguous "this is what the user
+# means" even if a different source was last active. Zero or multiple open
+# is ambiguous -- fall back to the stored/default source. The bar widget
+# handles the multiple-open case itself by prompting instead of calling
+# toggle blind; a bare hotkey press has no such UI and always falls back
+# the same way.
+auto_detect_source_id() {
+  local open_ids; open_ids=($(open_source_ids))
+  if [[ ${#open_ids[@]} -eq 1 ]]; then
+    echo "${open_ids[0]}"
+  else
+    active_source_id
+  fi
+}
+
 cmd_toggle() {
+  local explicit="${1:-}"
   local active; active=$(state_get '.pipActive' false)
-  if [[ "$active" == "true" ]]; then disable_pip; else enable_pip "$(active_source_id)"; fi
+  if [[ "$active" == "true" ]]; then disable_pip; return; fi
+  enable_pip "${explicit:-$(auto_detect_source_id)}"
 }
 
 cmd_size() {
   local active; active=$(state_get '.pipActive' false)
-  if [[ "$active" != "true" ]]; then enable_pip "$(active_source_id)"; return; fi
+  if [[ "$active" != "true" ]]; then enable_pip "$(auto_detect_source_id)"; return; fi
   local source_id addr mon_id cur next
   source_id=$(active_source_id)
   addr=$(window_address_for "$source_id") || { enable_pip "$source_id"; return; }
@@ -303,7 +471,7 @@ cmd_size() {
 
 cmd_corner() {
   local active; active=$(state_get '.pipActive' false)
-  if [[ "$active" != "true" ]]; then enable_pip "$(active_source_id)"; return; fi
+  if [[ "$active" != "true" ]]; then enable_pip "$(auto_detect_source_id)"; return; fi
   local source_id addr mon_id cur next
   source_id=$(active_source_id)
   addr=$(window_address_for "$source_id") || { enable_pip "$source_id"; return; }
@@ -372,15 +540,24 @@ cmd_reconcile() {
 
 cmd_status() { state_raw; }
 
+# Marks the first-run welcome popup as shown, so plugin/BarWidget.qml never
+# auto-opens it again -- see welcomeShown in DEFAULT_STATE. Called by the
+# bar widget itself the moment it auto-opens the popup, not on dismissal,
+# since "shown" means "displayed once," not "acted on."
+cmd_welcome_seen() { state_merge '{"welcomeShown":true}'; }
+
 main() {
   case "${1:-}" in
-    toggle) cmd_toggle ;;
+    toggle) cmd_toggle "${2:-}" ;;
     size) cmd_size ;;
     corner) cmd_corner ;;
     source) cmd_source ;;
     reservation) cmd_reservation "${2:-toggle}" ;;
     reconcile) cmd_reconcile ;;
     status) cmd_status ;;
+    sources-status) cmd_sources_status ;;
+    webapp-install) cmd_webapp_install "${2:-}" ;;
+    welcome-seen) cmd_welcome_seen ;;
     -h | --help | "") usage 0 ;;
     *)
       echo "Unknown command: $1" >&2

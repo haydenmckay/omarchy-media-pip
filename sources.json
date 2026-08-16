@@ -1,0 +1,12 @@
+[
+  { "id": "plex", "name": "Plex", "url": "http://localhost:32400/web/index.html" },
+  { "id": "youtube", "name": "YouTube", "url": "https://youtube.com/", "onEnableKey": "f" },
+  { "id": "netflix", "name": "Netflix", "url": "https://netflix.com/" },
+  { "id": "jellyfin", "name": "Jellyfin", "url": "http://jellyfin.local:8096/" },
+  { "id": "disneyplus", "name": "Disney+", "url": "https://disneyplus.com/" },
+  { "id": "hulu", "name": "Hulu", "url": "https://hulu.com/" },
+  { "id": "max", "name": "Max (HBO Max)", "url": "https://max.com/" },
+  { "id": "primevideo", "name": "Prime Video", "url": "https://primevideo.com/" },
+  { "id": "appletv", "name": "Apple TV+", "url": "https://tv.apple.com/" },
+  { "id": "paramountplus", "name": "Paramount+", "url": "https://paramountplus.com/" }
+]
