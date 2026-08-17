@@ -66,32 +66,41 @@ want.
 
 ## Keybindings
 
-Add these to `~/.config/hypr/bindings.lua` (already done on this machine —
-see that file for the exact lines). This is the whole list — deliberately
-short, because the bar icon covers the rest and Omarchy's own window
-hotkeys apply for free (see below).
+Add these to `~/.config/hypr/bindings.lua`. They call the CLI by its full
+self-staged path rather than a plain `media-pip` — it isn't on `$PATH` (see
+`cliPath` in `Service.qml`):
+
+```lua
+o.bind("SUPER + ALT + P", "Toggle picture-in-picture", "~/.local/state/media-pip/media-pip toggle")
+o.bind("SUPER + ALT + SHIFT + P", "Cycle PiP size", "~/.local/state/media-pip/media-pip size")
+o.bind("SUPER + CTRL + ALT + P", "Cycle PiP corner", "~/.local/state/media-pip/media-pip corner")
+o.bind("SUPER + ALT + O", "Cycle PiP source", "~/.local/state/media-pip/media-pip source")
+```
+
+This is the whole list — deliberately short, because the bar icon covers
+the rest and Omarchy's own window hotkeys apply to the PiP window for free
+(see below).
 
 | Keys | Action |
 |---|---|
-| `SUPER ALT + P` | Toggle PiP (show/hide current source) |
+| `SUPER ALT + P` | Toggle PiP — turning it off un-floats and un-pins the window, sending it straight back into your tiling layout |
 | `SUPER ALT SHIFT + P` | Cycle size (small → medium → large) |
 | `SUPER CTRL ALT + P` | Cycle corner (bottom-right → bottom-left → top-left → top-right) |
 | `SUPER ALT + O` | Cycle source (Plex → YouTube → …) |
-| `SUPER ALT + R` | Toggle space reservation (works if bound, but has no bar-icon path — see "Known limitations") |
 
 **Mouse:**
 
 | Action | Result |
 |---|---|
+| `SUPER` + left-drag on the PiP window | Move it freely |
+| `SUPER` + right-drag on the PiP window | Resize it freely |
 | Left-click bar icon | Toggle PiP for the active source — or open the source picker if more than one is open (see screenshots above) |
 | Right-click bar icon | Open "Manage sources…" |
 | Scroll bar icon up/down | Cycle size |
-| `SUPER` + left-drag on the PiP window | Move it freely |
-| `SUPER` + right-drag on the PiP window | Resize it freely |
 
-The last two are Omarchy defaults, not plugin-specific — the PiP window is
-a normal floated+pinned Hyprland window underneath, so dragging it around
-already just works, same as `SUPER + Backspace` for toggling its
+The drag rows above are Omarchy defaults, not plugin-specific — the PiP
+window is a normal floated+pinned Hyprland window underneath, so dragging
+it around already just works, same as `SUPER + Backspace` for toggling its
 transparency. A manual move/resize just repositions the window; it doesn't
 update the stored corner/size preset, so the next `size`/`corner` cycle
 snaps back to whatever the preset says.
@@ -153,19 +162,15 @@ plugin supplies everything else: a bar icon and OSD feedback.
 ### Self-hosted sources: personal overrides
 
 Plex and Jellyfin ship with a placeholder/localhost URL, since there's no
-public address to point at for a self-hosted server. Don't edit
-`sources.json` itself to fix that — it's part of this git repo, so a
-direct edit either risks getting committed and pushed (leaking a home
-server's LAN address publicly) or getting silently reset on the next
-`omarchy plugin update`.
+public address to point at for a self-hosted server. Right-click the bar
+icon → "Manage sources…" — Plex and Jellyfin each show a small settings
+cog (self-hosted sources only; there's nothing to point elsewhere for a
+fixed public service like Netflix). Click it, type the real address, hit
+Enter.
 
-Easiest: right-click the bar icon → "Manage sources…" — Plex and Jellyfin
-each show a small settings cog (self-hosted sources only; there's nothing
-to point elsewhere for a fixed public service like Netflix). Click it, type
-the real address, hit Enter.
-
-That writes to `~/.local/state/media-pip/sources.local.json`, which you
-can also edit directly if you'd rather:
+That writes to `~/.local/state/media-pip/sources.local.json`, outside the
+plugin's own files, so it survives updates. You can also edit that file
+directly if you'd rather:
 
 ```json
 [
@@ -177,15 +182,16 @@ Entries match by `id` and merge field-by-field with the shipped entry —
 overriding just the URL doesn't lose that source's other fields (e.g.
 `selfHosted` itself, which is what makes the cog show up in the first
 place) — or add an entirely new source if the id doesn't exist upstream.
-This file lives outside the plugin's install directory entirely, so it
-survives updates and reinstalls, and it's `.gitignore`d as a backstop even
-if created inside a checkout by mistake.
+It's also `.gitignore`d as a backstop, in case it's ever created inside a
+checkout by mistake.
 
 ## Known limitations
 
-- Space reservation (`SUPER ALT + R` / `media-pip reservation on`) has no
-  bar-icon path — nobody was actually using it day to day, so it's parked
-  rather than surfaced, though the code and hotkey both still work.
+- Space reservation (`media-pip reservation on`) has no bar-icon path and
+  no default keybind — nobody was actually using it day to day, so it's
+  parked rather than surfaced. The command still works; bind it yourself
+  (e.g. `SUPER ALT + R`, using the same full-path pattern as the keybinds
+  above) if you want it.
 - Two `toggle`/`size`/`corner` calls for a source with no window open yet,
   issued within about a second of each other, can each fail to see the
   other's in-flight launch and open a duplicate window (a `flock` guard
