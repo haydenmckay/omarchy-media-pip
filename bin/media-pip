@@ -181,6 +181,21 @@ cmd_sources_status() {
   done | jq -sc '.'
 }
 
+# Ids of configured sources that are already installed as real Omarchy web
+# apps -- same .desktop scan cmd_sources_status uses, batched once rather
+# than once per source (see that function's comment). Used to keep
+# `media-pip source` from cycling through services the user has never set
+# up (see next_source_id).
+installed_source_ids() {
+  local installed_execs id host
+  installed_execs=$(grep -h "^Exec=omarchy-launch-webapp " "$HOME/.local/share/applications/"*.desktop 2>/dev/null || true)
+  jq -c '.[]' "$SOURCES_FILE" | while IFS= read -r src; do
+    id=$(jq -r '.id' <<<"$src")
+    host=$(host_from_url "$(jq -r '.url' <<<"$src")")
+    [[ -z "$host" ]] || { grep -q "$host" <<<"$installed_execs" && echo "$id"; }
+  done
+}
+
 # Installs a configured source as a real Omarchy web app -- the same thing
 # Menu > Install > Web App does, just pre-filled and non-interactive.
 # Favicon fetch (empty icon arg triggers omarchy-webapp-install's own
@@ -230,13 +245,21 @@ cmd_set_source_url() {
   echo "$merged" >"$LOCAL_SOURCES_FILE"
 }
 
+# Cycles among installed sources only (see installed_source_ids) -- cycling
+# through every configured source, including ones the user has never set up
+# as a web app, meant SUPER+ALT+O could launch a fresh browser window for a
+# service like Paramount+ that was never actually wanted. Falls back to
+# every configured source if none are installed yet, so a completely fresh
+# install (nothing installed at all) doesn't make this a silent no-op.
 next_source_id() {
-  local current="$1"
+  local current="$1" candidates
+  candidates=$(installed_source_ids | jq -Rsc 'split("\n") | map(select(length > 0))')
+  [[ "$(jq 'length' <<<"$candidates")" -gt 0 ]] || candidates=$(jq -c '[.[].id]' "$SOURCES_FILE")
   jq -r --arg cur "$current" '
-    (map(.id) | index($cur)) as $i
-    | if $i == null then .[0].id
-      else .[($i + 1) % length].id
-      end' "$SOURCES_FILE"
+    (index($cur)) as $i
+    | if $i == null then .[0]
+      else .[($i + 1) % length]
+      end' <<<"$candidates"
 }
 
 active_source_id() {
@@ -549,6 +572,10 @@ cmd_source() {
   local current next active
   current=$(active_source_id)
   next=$(next_source_id "$current")
+  if [[ "$next" == "$current" ]]; then
+    osd "PiP source: only $(jq -r '.name' <<<"$(source_by_id "$next")") is installed"
+    return
+  fi
   active=$(state_get '.pipActive' false)
   if [[ "$active" == "true" ]]; then
     disable_pip

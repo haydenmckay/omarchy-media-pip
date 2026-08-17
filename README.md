@@ -93,7 +93,7 @@ the rest and Omarchy's own window hotkeys apply to the PiP window for free
 | `SUPER ALT + P` | Toggle PiP — turning it off un-floats and un-pins the window, sending it straight back into your tiling layout |
 | `SUPER ALT SHIFT + P` | Cycle size (small → medium → large) |
 | `SUPER CTRL ALT + P` | Cycle corner (bottom-right → bottom-left → top-left → top-right) |
-| `SUPER ALT + O` | Cycle source (Plex → YouTube → …) |
+| `SUPER ALT + O` | Cycle source, installed services only (falls back to every configured source if none are installed yet) |
 
 **Mouse:**
 
