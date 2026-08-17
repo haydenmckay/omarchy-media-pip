@@ -90,11 +90,16 @@ the rest and Omarchy's own window hotkeys apply to the PiP window for free
 
 **Mouse:**
 
+Left-click the TV icon in the bar while a streaming service is open to
+start PiP for it. If more than one is open, you'll get a dropdown to pick
+which one instead of guessing — that's the picker in the
+["Multiple sources at once"](#screenshots) screenshot above.
+
 | Action | Result |
 |---|---|
 | `SUPER` + left-drag on the PiP window | Move it freely |
 | `SUPER` + right-drag on the PiP window | Resize it freely |
-| Left-click bar icon | Toggle PiP for the active source — or open the source picker if more than one is open (see screenshots above) |
+| Left-click bar icon | Toggle PiP for the active source, or open the picker described above |
 | Right-click bar icon | Open "Manage sources…" |
 | Scroll bar icon up/down | Cycle size |
 
