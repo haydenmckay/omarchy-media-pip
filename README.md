@@ -120,7 +120,12 @@ plugin supplies everything else: a bar icon and OSD feedback.
 - `bin/media-pip` — CLI that does the actual work: launches/finds the
   source's browser window and drives it with `hyprctl dispatch
   "hl.dsp.window.*"` calls (float, pin, resize, move). Writes all state to
-  `~/.local/state/media-pip/state.json`.
+  `~/.local/state/media-pip/state.json`. A new browser window is launched
+  via `systemd-run --user --scope` — this just detaches the browser process
+  from the CLI's own short-lived process tree so it keeps running after the
+  CLI invocation exits; it's the standard systemd-session equivalent of
+  double-forking, not privilege escalation (no `sudo`/`pkexec`, no unit
+  files written, nothing outside the current user session).
 - `Service.qml` — headless Quickshell service. Mirrors that state
   file live via `FileView`.
 - `SpacerWindow.qml` — an invisible `PanelWindow` anchored to a
