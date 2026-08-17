@@ -66,15 +66,22 @@ want.
 
 ## Keybindings
 
-Add these to `~/.config/hypr/bindings.lua`. They call the CLI by its full
-self-staged path rather than a plain `media-pip` — it isn't on `$PATH` (see
-`cliPath` in `Service.qml`):
+Add these to `~/.config/hypr/bindings.lua`. Two things these can't inherit
+from a plain hotkey press, so both are spelled out explicitly:
+
+- The CLI's full self-staged path, not a bare `media-pip` — it isn't on
+  `$PATH` (see `cliPath` in `Service.qml`).
+- `MEDIA_PIP_SOURCES_DIR`, pointing at the plugin's real install
+  directory — the staged copy can't find `sources.json` relative to its
+  own location (that's the whole reason it's staged elsewhere), and
+  `Service.qml` normally supplies this env var for its own calls, which a
+  bare hotkey exec doesn't get for free.
 
 ```lua
-o.bind("SUPER + ALT + P", "Toggle picture-in-picture", "~/.local/state/media-pip/media-pip toggle")
-o.bind("SUPER + ALT + SHIFT + P", "Cycle PiP size", "~/.local/state/media-pip/media-pip size")
-o.bind("SUPER + CTRL + ALT + P", "Cycle PiP corner", "~/.local/state/media-pip/media-pip corner")
-o.bind("SUPER + ALT + O", "Cycle PiP source", "~/.local/state/media-pip/media-pip source")
+o.bind("SUPER + ALT + P", "Toggle picture-in-picture", "MEDIA_PIP_SOURCES_DIR=~/.config/omarchy/plugins/io.github.haydenmckay.media-pip ~/.local/state/media-pip/media-pip toggle")
+o.bind("SUPER + ALT + SHIFT + P", "Cycle PiP size", "MEDIA_PIP_SOURCES_DIR=~/.config/omarchy/plugins/io.github.haydenmckay.media-pip ~/.local/state/media-pip/media-pip size")
+o.bind("SUPER + CTRL + ALT + P", "Cycle PiP corner", "MEDIA_PIP_SOURCES_DIR=~/.config/omarchy/plugins/io.github.haydenmckay.media-pip ~/.local/state/media-pip/media-pip corner")
+o.bind("SUPER + ALT + O", "Cycle PiP source", "MEDIA_PIP_SOURCES_DIR=~/.config/omarchy/plugins/io.github.haydenmckay.media-pip ~/.local/state/media-pip/media-pip source")
 ```
 
 This is the whole list — deliberately short, because the bar icon covers
