@@ -145,8 +145,9 @@ plugin supplies everything else: a bar icon and OSD feedback.
   via `systemd-run --user --scope` — this just detaches the browser process
   from the CLI's own short-lived process tree so it keeps running after the
   CLI invocation exits; it's the standard systemd-session equivalent of
-  double-forking, not privilege escalation (no `sudo`/`pkexec`, no unit
-  files written, nothing outside the current user session).
+  double-forking, not privilege escalation — every command runs as your
+  own user, no unit files are written, and nothing reaches outside the
+  current user session.
 - `Service.qml` — headless Quickshell service. Mirrors that state
   file live via `FileView`.
 - `SpacerWindow.qml` — an invisible `PanelWindow` anchored to a
